@@ -99,6 +99,7 @@ struct OffscreenSharedTextureValue {
 #elif BUILDFLAG(IS_LINUX)
   std::vector<OffscreenNativePixmapPlaneInfo> planes;
   uint64_t modifier;
+  bool supports_zero_copy_webgpu_import;
 #endif
 };
 

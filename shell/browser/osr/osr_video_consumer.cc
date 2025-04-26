@@ -25,6 +25,7 @@ OffScreenVideoConsumer::OffScreenVideoConsumer(
       view_(view),
       video_capturer_(view->CreateVideoCapturer()) {
   video_capturer_->SetAutoThrottlingEnabled(false);
+  video_capturer_->SetAnimationFpsLockIn(false, 1);
   video_capturer_->SetMinSizeChangePeriod(base::TimeDelta());
   video_capturer_->SetFormat(media::PIXEL_FORMAT_ARGB);
 
@@ -111,6 +112,8 @@ void OffScreenVideoConsumer::OnFrameCaptured(
 #elif BUILDFLAG(IS_LINUX)
     const auto& native_pixmap = gmb_handle.native_pixmap_handle;
     texture.modifier = native_pixmap.modifier;
+    texture.supports_zero_copy_webgpu_import =
+        native_pixmap.supports_zero_copy_webgpu_import;
     for (const auto& plane : native_pixmap.planes) {
       texture.planes.emplace_back(plane.stride, plane.offset, plane.size,
                                   plane.fd.get());

@@ -10,6 +10,9 @@
 namespace electron::api::web_utils {
 
 std::string GetPathForFile(v8::Isolate* isolate, v8::Local<v8::Value> file);
+v8::Local<v8::Value> GetVideoFrameForSharedTexture(
+    v8::Isolate* isolate,
+    v8::Local<v8::Value> shared_texture_options);
 
 }  // namespace electron::api::web_utils
 

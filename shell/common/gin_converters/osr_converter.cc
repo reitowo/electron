@@ -1,5 +1,4 @@
-﻿
-// Copyright (c) 2024 GitHub, Inc.
+﻿// Copyright (c) 2024 GitHub, Inc.
 // Use of this source code is governed by the MIT license that can be found in
 // the LICENSE file.
 
@@ -126,6 +125,8 @@ v8::Local<v8::Value> Converter<electron::OffscreenSharedTextureValue>::ToV8(
   });
   dict.Set("planes", v8_planes);
   dict.Set("modifier", base::NumberToString(val.modifier));
+  dict.Set("supportsZeroCopyWebGpuImport",
+           val.supports_zero_copy_webgpu_import);
 #endif
 
   root.Set("textureInfo", ConvertToV8(isolate, dict));
