@@ -19,6 +19,7 @@
     * `size` number - Size in bytes of the plane. This is necessary to map the buffers.
     * `fd` number - File descriptor for the underlying memory object (usually dmabuf).
   * `modifier` string _Linux_ - The modifier is retrieved from GBM library and passed to EGL driver.
+  * `supportsZeroCopyWebGpuImport` boolean _Linux_ - Indicates whether supports zero copy import to WebGPU.
 * `release` Function - Release the resources. The `texture` cannot be directly passed to another process, users need to maintain texture lifecycles in
   main process, but it is safe to pass the `textureInfo` to another process. Only a limited number of textures can exist at the same time, so it's important
   that you call `texture.release()` as soon as you're done with the texture.

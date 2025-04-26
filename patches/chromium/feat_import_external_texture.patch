@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: reito <reito@chromium.org>
+Date: Sat, 26 Apr 2025 18:35:02 +0800
+Subject: feat: import external texture
+
+Prevent call CloseHandle on external DXGI, as it is a external handle, and we doesn't have ownership. We can't DuplicateHandle either, because Windows needs a HANDLE to source process which we don't have.
+
+diff --git a/ui/gfx/gpu_memory_buffer.cc b/ui/gfx/gpu_memory_buffer.cc
+index 173d24e0a6acc8ccb041d0d10430506c9714d578..a8f5c1ac685f86d4b9b0f209f5ff420ff1f09ae2 100644
+--- a/ui/gfx/gpu_memory_buffer.cc
++++ b/ui/gfx/gpu_memory_buffer.cc
+@@ -52,14 +52,19 @@ DXGIHandle::DXGIHandle(base::win::ScopedHandle buffer_handle,
+   DCHECK(buffer_handle_.is_valid());
+ }
+ 
++DXGIHandle::DXGIHandle(HANDLE external_handle)
++    : external_handle_(external_handle) {}
++
+ DXGIHandle::DXGIHandle(DXGIHandle&&) = default;
+ DXGIHandle& DXGIHandle::operator=(DXGIHandle&&) = default;
+ 
+ bool DXGIHandle::IsValid() const {
+-  return buffer_handle_.is_valid();
++  return buffer_handle_.is_valid() || external_handle_.has_value();
+ }
+ 
+ DXGIHandle DXGIHandle::Clone() const {
++  DCHECK(!external_handle_.has_value());
++
+   DXGIHandle handle;
+   if (buffer_handle_.is_valid()) {
+     handle.buffer_handle_ = CloneDXGIHandle(buffer_handle_.Get());
+@@ -70,6 +75,8 @@ DXGIHandle DXGIHandle::Clone() const {
+ }
+ 
+ base::win::ScopedHandle DXGIHandle::TakeBufferHandle() {
++  DCHECK(!external_handle_.has_value());
++
+   DCHECK(buffer_handle_.is_valid());
+   return std::move(buffer_handle_);
+ }
+diff --git a/ui/gfx/gpu_memory_buffer.h b/ui/gfx/gpu_memory_buffer.h
+index c978e157e3b996a613a7d4d4d29f024b79a73f4b..a1ab4a49770a9b42cbef9cc047c8a906abf42420 100644
+--- a/ui/gfx/gpu_memory_buffer.h
++++ b/ui/gfx/gpu_memory_buffer.h
+@@ -95,6 +95,10 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
+              const DXGIHandleToken& token,
+              base::UnsafeSharedMemoryRegion region);
+ 
++  // Typically only used by IPC deserialization. `buffer_handle` must be valid,
++  // but `region` may be invalid.
++  DXGIHandle(HANDLE external_handle);
++
+   DXGIHandle(DXGIHandle&&);
+   DXGIHandle& operator=(DXGIHandle&&);
+ 
+@@ -110,9 +114,14 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
+   // resource.
+   DXGIHandle Clone() const;
+ 
+-  HANDLE buffer_handle() const { return buffer_handle_.Get(); }
+-  base::win::ScopedHandle TakeBufferHandle();
++  HANDLE buffer_handle() const {
++    if (external_handle_.has_value())
++      return external_handle_.value();
+ 
++    return buffer_handle_.Get();
++  }
++
++  base::win::ScopedHandle TakeBufferHandle();
+   const DXGIHandleToken& token() const { return token_; }
+ 
+   const base::UnsafeSharedMemoryRegion& region() const { return region_; }
+@@ -125,6 +134,8 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
+   base::win::ScopedHandle buffer_handle_;
+   DXGIHandleToken token_;
+   base::UnsafeSharedMemoryRegion region_;
++
++  std::optional<HANDLE> external_handle_;
+ };
+ #endif
+ 

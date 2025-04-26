@@ -25,7 +25,6 @@ OffScreenVideoConsumer::OffScreenVideoConsumer(
       view_(view),
       video_capturer_(view->CreateVideoCapturer()) {
   video_capturer_->SetAutoThrottlingEnabled(false);
-  video_capturer_->SetAnimationFpsLockIn(false, 1);
   video_capturer_->SetMinSizeChangePeriod(base::TimeDelta());
   video_capturer_->SetFormat(media::PIXEL_FORMAT_ARGB);
 
