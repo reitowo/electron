@@ -8,14 +8,19 @@
 #include "ipc/common/gpu_memory_buffer_support.h"
 #include "media/base/format_utils.h"
 #include "media/base/video_frame.h"
-#include "modules/webcodecs/video_frame.h"
 #include "platform/heap/garbage_collected.h"
+#include "shell/common/gin_converters/blink_converter.h"
 #include "shell/common/gin_converters/gfx_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/error_thrower.h"
 #include "shell/common/node_includes.h"
 #include "third_party/blink/public/web/web_blob.h"
+#include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_blob.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_video_frame.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
 
 namespace {
 
@@ -155,17 +160,15 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
 
   gfx::GpuMemoryBufferHandle gmb_handle;
 #if BUILDFLAG(IS_WIN)
-  gmb_handle.type = gfx::DXGI_SHARED_HANDLE;
-
   auto handle = reinterpret_cast<HANDLE>(shared_texture.shared_texture_handle);
 
-  if (shared_texture.takes_ownership) {
+  if (shared_texture.takes_handle_ownership) {
     auto dxgi_handle = gfx::DXGIHandle(base::win::ScopedHandle(handle));
-    gmb_handle.set_dxgi_handle(std::move(dxgi_handle));
+    gmb_handle = gfx::GpuMemoryBufferHandle(std::move(dxgi_handle));
   } else {
     // Use a modded version of dxgi handle to wrap a handle without ownership.
     auto dxgi_handle = gfx::DXGIHandle(handle);
-    gmb_handle.set_dxgi_handle(std::move(dxgi_handle));
+    gmb_handle = gfx::GpuMemoryBufferHandle(std::move(dxgi_handle));
   }
 #elif BUILDFLAG(IS_APPLE)
   gmb_handle.type = gfx::IO_SURFACE_BUFFER;
@@ -173,7 +176,7 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
   auto io_surface =
       reinterpret_cast<IOSurfaceRef>(sharedTexture.shared_texture_handle);
 
-  if (shared_texture.takes_ownership) {
+  if (shared_texture.takes_handle_ownership) {
     gmb_handle.io_surface =
         base::apple::ScopedCFTypeRef<IOSurfaceRef>(io_surface);
   } else {
@@ -198,7 +201,7 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
     pixmap.planes.push_back(std::move(plane_info));
   }
 
-  if (shared_texture.takes_ownership) {
+  if (shared_texture.takes_handle_ownership) {
     gmb_handle.native_pixmap_handle = std::move(pixmap);
   } else {
     // Clone the native pixmap handle, as we don't take ownership, dup fds.
@@ -236,15 +239,14 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
       media::VideoFrame::WrapExternalGpuMemoryBuffer(
           visible_rect, natural_size, std::move(gpu_memory_buffer), timestamp);
 
-  auto current_context = isolate->GetCurrentContext();
-  blink::ScriptState* current_script_state =
-      blink::ScriptState::From(isolate, current_context);
-  blink::ExecutionContext* current_execution_context =
+  auto* current_script_state = blink::ScriptState::ForCurrentRealm(isolate);
+  auto* current_execution_context =
       blink::ToExecutionContext(current_script_state);
 
   blink::VideoFrame* frame = blink::MakeGarbageCollected<blink::VideoFrame>(
       std::move(raw_frame), current_execution_context);
-  return frame->ToV8(current_script_state);
+  return blink::ToV8Traits<blink::VideoFrame>::ToV8(current_script_state,
+                                                    frame);
 }
 
 }  // namespace electron::api::web_utils
