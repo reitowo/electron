@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: reito <reito@chromium.org>
-Date: Sat, 26 Apr 2025 18:35:02 +0800
+Date: Sat, 26 Apr 2025 22:58:30 +0800
 Subject: feat: import external texture
 
 Prevent call CloseHandle on external DXGI, as it is a external handle, and we doesn't have ownership. We can't DuplicateHandle either, because Windows needs a HANDLE to source process which we don't have.
 
 diff --git a/ui/gfx/gpu_memory_buffer.cc b/ui/gfx/gpu_memory_buffer.cc
-index 173d24e0a6acc8ccb041d0d10430506c9714d578..a8f5c1ac685f86d4b9b0f209f5ff420ff1f09ae2 100644
+index 76b25a3b26a79af0f74213015ff4c8a85a2d2a16..9ba86df734b523a933c5b3678c7866c126f25b4b 100644
 --- a/ui/gfx/gpu_memory_buffer.cc
 +++ b/ui/gfx/gpu_memory_buffer.cc
 @@ -52,14 +52,19 @@ DXGIHandle::DXGIHandle(base::win::ScopedHandle buffer_handle,
@@ -30,7 +30,7 @@ index 173d24e0a6acc8ccb041d0d10430506c9714d578..a8f5c1ac685f86d4b9b0f209f5ff420f
    DXGIHandle handle;
    if (buffer_handle_.is_valid()) {
      handle.buffer_handle_ = CloneDXGIHandle(buffer_handle_.Get());
-@@ -70,6 +75,8 @@ DXGIHandle DXGIHandle::Clone() const {
+@@ -78,6 +83,8 @@ DXGIHandle DXGIHandle::CloneWithRegion(
  }
  
  base::win::ScopedHandle DXGIHandle::TakeBufferHandle() {
@@ -40,10 +40,10 @@ index 173d24e0a6acc8ccb041d0d10430506c9714d578..a8f5c1ac685f86d4b9b0f209f5ff420f
    return std::move(buffer_handle_);
  }
 diff --git a/ui/gfx/gpu_memory_buffer.h b/ui/gfx/gpu_memory_buffer.h
-index c978e157e3b996a613a7d4d4d29f024b79a73f4b..a1ab4a49770a9b42cbef9cc047c8a906abf42420 100644
+index 3f907fb57941649b08b0fe326aa46465dca9c360..0cfeaa2e9fa03f54df6efe3af05d6d119252f75a 100644
 --- a/ui/gfx/gpu_memory_buffer.h
 +++ b/ui/gfx/gpu_memory_buffer.h
-@@ -95,6 +95,10 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
+@@ -106,6 +106,10 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
               const DXGIHandleToken& token,
               base::UnsafeSharedMemoryRegion region);
  
@@ -54,9 +54,9 @@ index c978e157e3b996a613a7d4d4d29f024b79a73f4b..a1ab4a49770a9b42cbef9cc047c8a906
    DXGIHandle(DXGIHandle&&);
    DXGIHandle& operator=(DXGIHandle&&);
  
-@@ -110,9 +114,14 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
-   // resource.
-   DXGIHandle Clone() const;
+@@ -126,9 +130,14 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
+   // `region().IsValid()` is false.
+   DXGIHandle CloneWithRegion(base::UnsafeSharedMemoryRegion region) const;
  
 -  HANDLE buffer_handle() const { return buffer_handle_.Get(); }
 -  base::win::ScopedHandle TakeBufferHandle();
@@ -71,7 +71,7 @@ index c978e157e3b996a613a7d4d4d29f024b79a73f4b..a1ab4a49770a9b42cbef9cc047c8a906
    const DXGIHandleToken& token() const { return token_; }
  
    const base::UnsafeSharedMemoryRegion& region() const { return region_; }
-@@ -125,6 +134,8 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
+@@ -140,6 +149,8 @@ class COMPONENT_EXPORT(GFX) DXGIHandle {
    base::win::ScopedHandle buffer_handle_;
    DXGIHandleToken token_;
    base::UnsafeSharedMemoryRegion region_;
