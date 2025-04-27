@@ -5,10 +5,12 @@
 #include "shell/renderer/api/electron_api_web_utils.h"
 
 #include "base/strings/string_number_conversions_internal.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
+#include "content/browser/gpu/gpu_memory_buffer_manager_singleton.h"
+#include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
 #include "ipc/common/gpu_memory_buffer_support.h"
 #include "media/base/format_utils.h"
 #include "media/base/video_frame.h"
-#include "platform/heap/garbage_collected.h"
 #include "shell/common/gin_converters/blink_converter.h"
 #include "shell/common/gin_converters/gfx_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
@@ -21,6 +23,8 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_video_frame.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 
 namespace {
 
@@ -37,14 +41,6 @@ struct ExternalSharedTexturePlane {
 };
 
 struct ExternalSharedTexture {
-  // We typically don't take ownership of the shared texture handle, mostly
-  // the handle's lifecycle is managed by the producer. When set to |false|,
-  // it clones the handle to create the gpu memory buffer, and at release,
-  // only the cloned handles will be closed.
-  // This also means the actual remote resource the handle points to may not
-  // be freed even the value is |true|, the ownership is just about handles.
-  bool takes_handle_ownership = false;
-
   // The pixel format of the shared texture, RGBA or BGRA depends on platform.
   media::VideoPixelFormat pixel_format;
 
@@ -95,7 +91,6 @@ struct Converter<ExternalSharedTexture> {
     dict.Get("codedSize", &out->coded_size);
     dict.Get("visibleRect", &out->visible_rect);
     dict.Get("timestamp", &out->timestamp);
-    dict.Get("takesHandleOwnership", &out->takes_handle_ownership);
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
     v8::Local<v8::Value> handle_buf;
@@ -151,6 +146,10 @@ std::string GetPathForFile(v8::Isolate* isolate, v8::Local<v8::Value> file) {
 v8::Local<v8::Value> GetVideoFrameForSharedTexture(
     v8::Isolate* isolate,
     v8::Local<v8::Value> shared_texture_options) {
+  auto* current_script_state = blink::ScriptState::ForCurrentRealm(isolate);
+  auto* current_execution_context =
+      blink::ToExecutionContext(current_script_state);
+
   ExternalSharedTexture shared_texture{};
   if (!gin::ConvertFromV8(isolate, shared_texture_options, &shared_texture)) {
     gin_helper::ErrorThrower(isolate).ThrowTypeError(
@@ -158,32 +157,22 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
     return v8::Null(isolate);
   }
 
+  // Takes ownership. Clone at the producer side every time you import.
   gfx::GpuMemoryBufferHandle gmb_handle;
+
 #if BUILDFLAG(IS_WIN)
   auto handle = reinterpret_cast<HANDLE>(shared_texture.shared_texture_handle);
 
-  if (shared_texture.takes_handle_ownership) {
-    auto dxgi_handle = gfx::DXGIHandle(base::win::ScopedHandle(handle));
-    gmb_handle = gfx::GpuMemoryBufferHandle(std::move(dxgi_handle));
-  } else {
-    // Use a modded version of dxgi handle to wrap a handle without ownership.
-    auto dxgi_handle = gfx::DXGIHandle(handle);
-    gmb_handle = gfx::GpuMemoryBufferHandle(std::move(dxgi_handle));
-  }
+  auto dxgi_handle = gfx::DXGIHandle(base::win::ScopedHandle(handle));
+  gmb_handle = gfx::GpuMemoryBufferHandle(std::move(dxgi_handle));
 #elif BUILDFLAG(IS_APPLE)
   gmb_handle.type = gfx::IO_SURFACE_BUFFER;
 
   auto io_surface =
       reinterpret_cast<IOSurfaceRef>(sharedTexture.shared_texture_handle);
 
-  if (shared_texture.takes_handle_ownership) {
-    gmb_handle.io_surface =
-        base::apple::ScopedCFTypeRef<IOSurfaceRef>(io_surface);
-  } else {
-    // Retain the IOSurface, as we don't take ownership, makes ref +1
-    gmb_handle.io_surface = base::apple::ScopedCFTypeRef<IOSurfaceRef>(
-        io_surface, base::scoped_policy::RETAIN);
-  }
+  gmb_handle.io_surface =
+      base::apple::ScopedCFTypeRef<IOSurfaceRef>(io_surface);
 #elif BUILDFLAG(IS_LINUX)
   gmb_handle.type = gfx::NATIVE_PIXMAP;
 
@@ -201,26 +190,14 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
     pixmap.planes.push_back(std::move(plane_info));
   }
 
-  if (shared_texture.takes_handle_ownership) {
-    gmb_handle.native_pixmap_handle = std::move(pixmap);
-  } else {
-    // Clone the native pixmap handle, as we don't take ownership, dup fds.
-    auto cloned_pixmap_handle = gfx::CloneHandleForIPC(pixmap);
-    gmb_handle.native_pixmap_handle = std::move(cloned_pixmap_handle);
-
-    // Release the ScopedFD to prevent closing the fd.
-    for (auto& plane : pixmap.planes) {
-      plane.fd.release();
-    }
-  }
+  gmb_handle.native_pixmap_handle = std::move(pixmap);
 #endif
 
-  media::VideoPixelFormat pixel_format = shared_texture.pixel_format;
-  gfx::BufferUsage buffer_usage = gfx::BufferUsage::GPU_READ;
   gfx::Size coded_size = shared_texture.coded_size;
   gfx::Size natural_size = shared_texture.coded_size;
   gfx::Rect visible_rect = shared_texture.visible_rect;
   base::TimeDelta timestamp = base::Microseconds(shared_texture.timestamp);
+  media::VideoPixelFormat pixel_format = shared_texture.pixel_format;
 
   auto buffer_format = media::VideoPixelFormatToGfxBufferFormat(pixel_format);
   if (!buffer_format.has_value()) {
@@ -229,19 +206,27 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
     return v8::Null(isolate);
   }
 
-  gpu::GpuMemoryBufferSupport support;
-  std::unique_ptr<gfx::GpuMemoryBuffer> gpu_memory_buffer =
-      support.CreateGpuMemoryBufferImplFromHandle(
-          std::move(gmb_handle), coded_size, *buffer_format, buffer_usage,
-          base::NullCallback());
+  auto* siip = blink::SharedGpuContext::SharedImageInterfaceProvider();
+  auto* sii = siip->SharedImageInterface();
+  gpu::SharedImageUsageSet shared_image_usage =
+      gpu::SHARED_IMAGE_USAGE_SCANOUT | gpu::SHARED_IMAGE_USAGE_GLES2_READ |
+      gpu::SHARED_IMAGE_USAGE_RASTER_READ |
+      gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
+      gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
+
+  auto si_format = viz::GetSharedImageFormat(buffer_format.value());
+  auto si = sii->CreateSharedImage(
+      {si_format, coded_size, gfx::ColorSpace::CreateSRGB(), shared_image_usage,
+       "SharedTextureVideoFrame"},
+      std::move(gmb_handle));
+
+  media::VideoFrame::ReleaseMailboxCB release_cb =
+      base::BindOnce([](const gpu::SyncToken& sync_token) {});
 
   scoped_refptr<media::VideoFrame> raw_frame =
-      media::VideoFrame::WrapExternalGpuMemoryBuffer(
-          visible_rect, natural_size, std::move(gpu_memory_buffer), timestamp);
-
-  auto* current_script_state = blink::ScriptState::ForCurrentRealm(isolate);
-  auto* current_execution_context =
-      blink::ToExecutionContext(current_script_state);
+      media::VideoFrame::WrapSharedImage(
+          pixel_format, si, si->creation_sync_token(), std::move(release_cb),
+          coded_size, visible_rect, natural_size, timestamp);
 
   blink::VideoFrame* frame = blink::MakeGarbageCollected<blink::VideoFrame>(
       std::move(raw_frame), current_execution_context);
