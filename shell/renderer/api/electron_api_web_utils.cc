@@ -6,9 +6,6 @@
 
 #include "base/strings/string_number_conversions_internal.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
-#include "content/browser/gpu/gpu_memory_buffer_manager_singleton.h"
-#include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
-#include "ipc/common/gpu_memory_buffer_support.h"
 #include "media/base/format_utils.h"
 #include "media/base/video_frame.h"
 #include "shell/common/gin_converters/blink_converter.h"
@@ -20,9 +17,12 @@
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_blob.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_video_frame.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_device.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_texture.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
+#include "third_party/blink/renderer/modules/webgpu/gpu_device.h"
+#include "third_party/blink/renderer/modules/webgpu/gpu_texture.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 
@@ -64,6 +64,16 @@ struct ExternalSharedTexture {
   bool supports_zero_copy_webgpu_import = false;
 #endif
 };
+
+wgpu::TextureFormat ToWGPUFormat(const media::VideoPixelFormat& format) {
+  if (format == media::VideoPixelFormat::PIXEL_FORMAT_ARGB) {
+    return wgpu::TextureFormat::BGRA8Unorm;
+  }
+  if (format == media::VideoPixelFormat::PIXEL_FORMAT_ABGR) {
+    return wgpu::TextureFormat::RGBA8Unorm;
+  }
+  NOTREACHED() << "Unexpected media pixel format: " << format;
+}
 
 }  // namespace
 
@@ -143,13 +153,10 @@ std::string GetPathForFile(v8::Isolate* isolate, v8::Local<v8::Value> file) {
   return blob.Path();
 }
 
-v8::Local<v8::Value> GetVideoFrameForSharedTexture(
+v8::Local<v8::Value> ImportSharedTextureToWebGPU(
     v8::Isolate* isolate,
+    v8::Local<v8::Value> gpu_device,
     v8::Local<v8::Value> shared_texture_options) {
-  auto* current_script_state = blink::ScriptState::ForCurrentRealm(isolate);
-  auto* current_execution_context =
-      blink::ToExecutionContext(current_script_state);
-
   ExternalSharedTexture shared_texture{};
   if (!gin::ConvertFromV8(isolate, shared_texture_options, &shared_texture)) {
     gin_helper::ErrorThrower(isolate).ThrowTypeError(
@@ -157,22 +164,25 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
     return v8::Null(isolate);
   }
 
-  // Takes ownership. Clone at the producer side every time you import.
-  gfx::GpuMemoryBufferHandle gmb_handle;
+  wgpu::SharedTextureMemoryDescriptor desc;
 
 #if BUILDFLAG(IS_WIN)
   auto handle = reinterpret_cast<HANDLE>(shared_texture.shared_texture_handle);
-
-  auto dxgi_handle = gfx::DXGIHandle(base::win::ScopedHandle(handle));
-  gmb_handle = gfx::GpuMemoryBufferHandle(std::move(dxgi_handle));
+  wgpu::SharedTextureMemoryDXGISharedHandleDescriptor shared_handle_desc;
+  shared_handle_desc.handle = handle;
+  shared_handle_desc.useKeyedMutex = false;
+  desc.nextInChain = &shared_handle_desc;
+  desc.label = "ImportSharedTextureToWebGPU_SharedTextureMemory_DXGIHandle";
 #elif BUILDFLAG(IS_APPLE)
   gmb_handle.type = gfx::IO_SURFACE_BUFFER;
 
   auto io_surface =
       reinterpret_cast<IOSurfaceRef>(sharedTexture.shared_texture_handle);
 
-  gmb_handle.io_surface =
-      base::apple::ScopedCFTypeRef<IOSurfaceRef>(io_surface);
+  wgpu::SharedTextureMemoryIOSurfaceHandleDescriptor shared_handle_desc;
+  shared_handle_desc.ioSurface = io_surface;
+  desc.nextInChain = &shared_handle_desc;
+  desc.label = "ImportSharedTextureToWebGPU_SharedTextureMemory_IOSurface";
 #elif BUILDFLAG(IS_LINUX)
   gmb_handle.type = gfx::NATIVE_PIXMAP;
 
@@ -193,45 +203,31 @@ v8::Local<v8::Value> GetVideoFrameForSharedTexture(
   gmb_handle.native_pixmap_handle = std::move(pixmap);
 #endif
 
-  gfx::Size coded_size = shared_texture.coded_size;
-  gfx::Size natural_size = shared_texture.coded_size;
-  gfx::Rect visible_rect = shared_texture.visible_rect;
-  base::TimeDelta timestamp = base::Microseconds(shared_texture.timestamp);
-  media::VideoPixelFormat pixel_format = shared_texture.pixel_format;
+  blink::GPUDevice* blink_device = blink::V8GPUDevice::ToWrappableUnsafe(
+      isolate, gpu_device.As<v8::Object>());
 
-  auto buffer_format = media::VideoPixelFormatToGfxBufferFormat(pixel_format);
-  if (!buffer_format.has_value()) {
-    gin_helper::ErrorThrower(isolate).ThrowTypeError(
-        "Invalid shared texture buffer format");
-    return v8::Null(isolate);
-  }
+  auto device = blink_device->GetHandle();
+  auto shared_texture_memory = device.ImportSharedTextureMemory(&desc);
 
-  auto* siip = blink::SharedGpuContext::SharedImageInterfaceProvider();
-  auto* sii = siip->SharedImageInterface();
-  gpu::SharedImageUsageSet shared_image_usage =
-      gpu::SHARED_IMAGE_USAGE_SCANOUT | gpu::SHARED_IMAGE_USAGE_GLES2_READ |
-      gpu::SHARED_IMAGE_USAGE_RASTER_READ |
-      gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
-      gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
+  wgpu::TextureDescriptor texture_desc;
+  texture_desc.label = "ImportSharedTextureToWebGPU_TextureDescriptor";
+  texture_desc.size.width = shared_texture.coded_size.width();
+  texture_desc.size.height = shared_texture.coded_size.height();
+  texture_desc.format = ToWGPUFormat(shared_texture.pixel_format);
+  texture_desc.usage = wgpu::TextureUsage::RenderAttachment |
+                       wgpu::TextureUsage::TextureBinding |
+                       wgpu::TextureUsage::CopySrc;
 
-  auto si_format = viz::GetSharedImageFormat(buffer_format.value());
-  auto si = sii->CreateSharedImage(
-      {si_format, coded_size, gfx::ColorSpace::CreateSRGB(), shared_image_usage,
-       "SharedTextureVideoFrame"},
-      std::move(gmb_handle));
+  auto imported_texture = shared_texture_memory.CreateTexture(&texture_desc);
 
-  media::VideoFrame::ReleaseMailboxCB release_cb =
-      base::BindOnce([](const gpu::SyncToken& sync_token) {});
+  blink::GPUTexture* gpu_texture =
+      blink::MakeGarbageCollected<blink::GPUTexture>(
+          blink_device, imported_texture,
+          String::FromUTF8("ImportSharedTextureToWebGPU_Texture"));
 
-  scoped_refptr<media::VideoFrame> raw_frame =
-      media::VideoFrame::WrapSharedImage(
-          pixel_format, si, si->creation_sync_token(), std::move(release_cb),
-          coded_size, visible_rect, natural_size, timestamp);
-
-  blink::VideoFrame* frame = blink::MakeGarbageCollected<blink::VideoFrame>(
-      std::move(raw_frame), current_execution_context);
-  return blink::ToV8Traits<blink::VideoFrame>::ToV8(current_script_state,
-                                                    frame);
+  auto* current_script_state = blink::ScriptState::ForCurrentRealm(isolate);
+  return blink::ToV8Traits<blink::GPUTexture>::ToV8(current_script_state,
+                                                    gpu_texture);
 }
 
 }  // namespace electron::api::web_utils
@@ -245,8 +241,8 @@ void Initialize(v8::Local<v8::Object> exports,
   v8::Isolate* isolate = context->GetIsolate();
   gin_helper::Dictionary dict(isolate, exports);
   dict.SetMethod("getPathForFile", &electron::api::web_utils::GetPathForFile);
-  dict.SetMethod("getVideoFrameForSharedTexture",
-                 &electron::api::web_utils::GetVideoFrameForSharedTexture);
+  dict.SetMethod("importExternalSharedTexture",
+                 &electron::api::web_utils::ImportSharedTextureToWebGPU);
 }
 
 }  // namespace
