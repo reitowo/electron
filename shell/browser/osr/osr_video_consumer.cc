@@ -84,11 +84,8 @@ void OffScreenVideoConsumer::OnFrameCaptured(
   if (view_->offscreen_use_shared_texture()) {
     CHECK(data->is_gpu_memory_buffer_handle());
 
-    auto& orig_handle = data->get_gpu_memory_buffer_handle();
-    CHECK(!orig_handle.is_null());
-
-    // Clone the handle to support keep the handle alive after the callback
-    auto gmb_handle = orig_handle.Clone();
+    auto gmb_handle = std::move(data->get_gpu_memory_buffer_handle());
+    CHECK(!gmb_handle.is_null());
 
     OffscreenSharedTextureValue texture;
     texture.pixel_format = info->pixel_format;

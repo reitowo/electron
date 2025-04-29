@@ -6,10 +6,12 @@
 
 #include "base/strings/string_number_conversions_internal.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
+#include "content/browser/gpu/gpu_process_host.h"
 #include "media/base/format_utils.h"
 #include "media/base/video_frame.h"
 #include "shell/common/gin_converters/blink_converter.h"
 #include "shell/common/gin_converters/gfx_converter.h"
+#include "shell/common/gin_converters/optional_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/error_thrower.h"
 #include "shell/common/node_includes.h"
@@ -54,6 +56,14 @@ struct ExternalSharedTexture {
   // The capture timestamp, microseconds since capture start
   int64_t timestamp = 0;
 
+#if BUILDFLAG(IS_WIN)
+  // The process who created the shared resource, no matter duplicated or not.
+  std::optional<uint32_t> handle_owner_process = 0;
+
+  // Whether the shared texture is created with keyed mutex.
+  std::optional<bool> use_keyed_mutex = 0;
+#endif
+
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   // On Windows it is a HANDLE to the shared D3D11 texture.
   // On macOS it is a IOSurface* to the shared IOSurface.
@@ -74,6 +84,31 @@ wgpu::TextureFormat ToWGPUFormat(const media::VideoPixelFormat& format) {
   }
   NOTREACHED() << "Unexpected media pixel format: " << format;
 }
+
+#if BUILDFLAG(IS_WIN)
+HANDLE DuplicateHandleFromOwnerProcess(HANDLE shared_handle, DWORD processId) {
+  HANDLE source_process = OpenProcess(PROCESS_DUP_HANDLE, FALSE, processId);
+  if (!source_process) {
+    LOG(ERROR) << "Failed to open process to duplicate handle: "
+               << GetLastError();
+    return INVALID_HANDLE_VALUE;
+  }
+
+  HANDLE duplicated_handle = nullptr;
+  BOOL ok =
+      ::DuplicateHandle(source_process, shared_handle, GetCurrentProcess(),
+                        &duplicated_handle, 0, FALSE, DUPLICATE_SAME_ACCESS);
+
+  CloseHandle(source_process);
+
+  if (!ok) {
+    LOG(ERROR) << "Failed to duplicate handle: " << GetLastError();
+    return INVALID_HANDLE_VALUE;
+  }
+
+  return duplicated_handle;
+}
+#endif
 
 }  // namespace
 
@@ -101,6 +136,11 @@ struct Converter<ExternalSharedTexture> {
     dict.Get("codedSize", &out->coded_size);
     dict.Get("visibleRect", &out->visible_rect);
     dict.Get("timestamp", &out->timestamp);
+
+#if BUILDFLAG(IS_WIN)
+    dict.Get("useKeyedMutex", &out->use_keyed_mutex);
+    dict.Get("handleOwnerProcess", &out->handle_owner_process);
+#endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
     v8::Local<v8::Value> handle_buf;
@@ -168,9 +208,23 @@ v8::Local<v8::Value> ImportSharedTextureToWebGPU(
 
 #if BUILDFLAG(IS_WIN)
   auto handle = reinterpret_cast<HANDLE>(shared_texture.shared_texture_handle);
+
+  auto source_pid = shared_texture.handle_owner_process.value_or(0);
+  if (source_pid != 0) {
+    auto dup_handle = DuplicateHandleFromOwnerProcess(handle, source_pid);
+    if (dup_handle == INVALID_HANDLE_VALUE) {
+      gin_helper::ErrorThrower(isolate).ThrowTypeError(
+          "Unable to duplicate handle for process");
+      return v8::Null(isolate);
+    }
+
+    handle = dup_handle;
+  }
+
   wgpu::SharedTextureMemoryDXGISharedHandleDescriptor shared_handle_desc;
   shared_handle_desc.handle = handle;
-  shared_handle_desc.useKeyedMutex = false;
+  shared_handle_desc.useKeyedMutex =
+      shared_texture.use_keyed_mutex.value_or(false);
   desc.nextInChain = &shared_handle_desc;
   desc.label = "ImportSharedTextureToWebGPU_SharedTextureMemory_DXGIHandle";
 #elif BUILDFLAG(IS_APPLE)
@@ -241,7 +295,7 @@ void Initialize(v8::Local<v8::Object> exports,
   v8::Isolate* isolate = context->GetIsolate();
   gin_helper::Dictionary dict(isolate, exports);
   dict.SetMethod("getPathForFile", &electron::api::web_utils::GetPathForFile);
-  dict.SetMethod("importExternalSharedTexture",
+  dict.SetMethod("importExternalSharedTextureToGpuDevice",
                  &electron::api::web_utils::ImportSharedTextureToWebGPU);
 }
 
