@@ -96,7 +96,7 @@ HANDLE DuplicateHandleFromOwnerProcess(HANDLE shared_handle, DWORD processId) {
 
   HANDLE duplicated_handle = nullptr;
   BOOL ok =
-      ::DuplicateHandle(source_process, shared_handle, GetCurrentProcess(),
+      ::DuplicateHandle(source_process, shared_handle, source_process,
                         &duplicated_handle, 0, FALSE, DUPLICATE_SAME_ACCESS);
 
   CloseHandle(source_process);
@@ -264,7 +264,7 @@ v8::Local<v8::Value> ImportSharedTextureToWebGPU(
   auto shared_texture_memory = device.ImportSharedTextureMemory(&desc);
 
   wgpu::TextureDescriptor texture_desc;
-  texture_desc.label = "ImportSharedTextureToWebGPU_TextureDescriptor";
+  texture_desc.label = "ImportSharedTextureToWebGPU_Texture";
   texture_desc.size.width = shared_texture.coded_size.width();
   texture_desc.size.height = shared_texture.coded_size.height();
   texture_desc.format = ToWGPUFormat(shared_texture.pixel_format);
