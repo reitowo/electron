@@ -206,6 +206,13 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
   compositor_->SetDelegate(this);
   compositor_->SetRootLayer(root_layer_.get());
 
+  screen_ = display::Screen::GetScreen();
+  screen_->AddObserver(this);
+
+  gfx::DisplayColorSpaces display_color_spaces =
+      screen_->GetPrimaryDisplay().GetColorSpaces();
+  compositor_->SetDisplayColorSpaces(display_color_spaces);
+
   ResizeRootLayer(false);
 
   render_widget_host_->SetView(this);
@@ -216,6 +223,14 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
                                   weak_ptr_factory_.GetWeakPtr()));
     video_consumer_->SetActive(is_painting());
     video_consumer_->SetFrameRate(this->frame_rate());
+  }
+}
+
+void OffScreenRenderWidgetHostView::OnDisplayMetricsChanged(
+    const display::Display& display,
+    uint32_t changed_metrics) {
+  if (changed_metrics & display::DisplayObserver::DISPLAY_METRIC_COLOR_SPACE) {
+    compositor_->SetDisplayColorSpaces(display.GetColorSpaces());
   }
 }
 
@@ -232,6 +247,8 @@ void OffScreenRenderWidgetHostView::OnLocalSurfaceIdChanged(
 }
 
 OffScreenRenderWidgetHostView::~OffScreenRenderWidgetHostView() {
+  screen_->RemoveObserver(this);
+
   ReleaseCompositor();
   root_layer_.reset();
 

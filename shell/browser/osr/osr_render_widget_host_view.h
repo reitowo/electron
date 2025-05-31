@@ -34,6 +34,8 @@
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer_delegate.h"
 #include "ui/compositor/layer_owner.h"
+#include "ui/display/display_observer.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/geometry/point.h"
 
 #include "components/viz/host/host_display_client.h"
@@ -67,7 +69,8 @@ class OffScreenRenderWidgetHostView
     : public content::RenderWidgetHostViewBase,
       private content::RenderFrameMetadataProvider::Observer,
       public ui::CompositorDelegate,
-      private OffscreenViewProxyObserver {
+      private OffscreenViewProxyObserver,
+      private display::DisplayObserver {
  public:
   OffScreenRenderWidgetHostView(bool transparent,
                                 bool offscreen_use_shared_texture,
@@ -272,6 +275,9 @@ class OffScreenRenderWidgetHostView
   // opaqueness changes.
   void UpdateBackgroundColorFromRenderer(SkColor color);
 
+  void OnDisplayMetricsChanged(const display::Display& display,
+                               uint32_t changed_metrics) override;
+
   // Weak ptrs.
   raw_ptr<content::RenderWidgetHostImpl> render_widget_host_;
 
@@ -298,6 +304,8 @@ class OffScreenRenderWidgetHostView
 
   bool hold_resize_ = false;
   bool pending_resize_ = false;
+
+  raw_ptr<display::Screen> screen_;
 
   viz::LocalSurfaceId delegated_frame_host_surface_id_;
   viz::ParentLocalSurfaceIdAllocator delegated_frame_host_allocator_;
