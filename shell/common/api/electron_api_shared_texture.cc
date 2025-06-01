@@ -79,6 +79,8 @@ std::string TransferVideoPixelFormatToString(media::VideoPixelFormat format) {
       return "bgra";
     case media::PIXEL_FORMAT_ABGR:
       return "rgba";
+    case media::PIXEL_FORMAT_RGBAF16:
+      return "rgbaf16";
     default:
       NOTREACHED();
   }
@@ -159,6 +161,7 @@ v8::Local<v8::Value> ImportedSharedTexture::CreateVideoFrame(
           this->pixel_format, si, this->frame_creation_sync_token,
           std::move(cb), this->coded_size, this->visible_rect, this->coded_size,
           base::Microseconds(this->timestamp));
+  raw_frame->set_color_space(si->color_space());
 
   blink::VideoFrame* frame = blink::MakeGarbageCollected<blink::VideoFrame>(
       raw_frame, current_execution_context);
@@ -373,6 +376,8 @@ struct Converter<ImportSharedTextureInfo> {
         out->pixel_format = media::PIXEL_FORMAT_ARGB;
       else if (pixel_format_str == "rgba")
         out->pixel_format = media::PIXEL_FORMAT_ABGR;
+      else if (pixel_format_str == "rgbaf16")
+        out->pixel_format = media::PIXEL_FORMAT_RGBAF16;
       else
         return false;
     }
