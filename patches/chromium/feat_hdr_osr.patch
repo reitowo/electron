@@ -1,0 +1,498 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: reito <reito@chromium.org>
+Date: Mon, 2 Jun 2025 03:23:00 +0800
+Subject: feat: hdr osr
+
+Add HDR support for OSR.
+
+diff --git a/components/viz/common/frame_sinks/copy_output_request.cc b/components/viz/common/frame_sinks/copy_output_request.cc
+index f0716b37f1c9dfc8bfe5eca1b1abf59992412efd..2921f857378d40bd21f41f37896e37cd94f135a3 100644
+--- a/components/viz/common/frame_sinks/copy_output_request.cc
++++ b/components/viz/common/frame_sinks/copy_output_request.cc
+@@ -26,6 +26,8 @@ const char* ResultFormatToShortString(
+   switch (result_format) {
+     case viz::CopyOutputRequest::ResultFormat::RGBA:
+       return "RGBA";
++    case viz::CopyOutputRequest::ResultFormat::RGBAF16:
++      return "RGBAF16";
+     case viz::CopyOutputRequest::ResultFormat::I420_PLANES:
+       return "I420";
+     case viz::CopyOutputRequest::ResultFormat::NV12:
+@@ -119,7 +121,8 @@ void CopyOutputRequest::set_blit_request(BlitRequest blit_request) {
+   DCHECK(!blit_request_);
+   DCHECK_EQ(result_destination(), ResultDestination::kNativeTextures);
+   DCHECK(result_format() == ResultFormat::NV12 ||
+-         result_format() == ResultFormat::RGBA);
++         result_format() == ResultFormat::RGBA ||
++         result_format() == ResultFormat::RGBAF16);
+   DCHECK(has_result_selection());
+ 
+   if (result_format() == ResultFormat::NV12) {
+diff --git a/components/viz/common/frame_sinks/copy_output_result.cc b/components/viz/common/frame_sinks/copy_output_result.cc
+index ee545c1b49044f19401eb38a776b6fe7e98205d2..8f35327907a98c7e26777ed45acd9d14733eec45 100644
+--- a/components/viz/common/frame_sinks/copy_output_result.cc
++++ b/components/viz/common/frame_sinks/copy_output_result.cc
+@@ -34,7 +34,7 @@ CopyOutputResult::CopyOutputResult(Format format,
+       rect_(rect),
+       needs_lock_for_bitmap_(needs_lock_for_bitmap) {
+   DCHECK(format_ == Format::RGBA || format_ == Format::I420_PLANES ||
+-         format == Format::NV12);
++         format == Format::NV12 || format_ == Format::RGBAF16);
+   DCHECK(destination_ == Destination::kSystemMemory ||
+          destination_ == Destination::kNativeTextures);
+ }
+@@ -78,8 +78,9 @@ bool CopyOutputResult::ReadI420Planes(base::span<uint8_t> y_out,
+                                       int v_out_stride) const {
+   auto scoped_sk_bitmap = ScopedAccessSkBitmap();
+   const SkBitmap& bitmap = scoped_sk_bitmap.bitmap();
+-  if (!bitmap.readyToDraw())
++  if (!bitmap.readyToDraw()) {
+     return false;
++  }
+ 
+   const uint8_t* pixels = static_cast<uint8_t*>(bitmap.getPixels());
+   // The conversion below ignores color space completely, and it's not even
+@@ -113,8 +114,9 @@ bool CopyOutputResult::ReadNV12Planes(base::span<uint8_t> y_out,
+                                       int uv_out_stride) const {
+   auto scoped_sk_bitmap = ScopedAccessSkBitmap();
+   const SkBitmap& bitmap = scoped_sk_bitmap.bitmap();
+-  if (!bitmap.readyToDraw())
++  if (!bitmap.readyToDraw()) {
+     return false;
++  }
+ 
+   const uint8_t* pixels = static_cast<uint8_t*>(bitmap.getPixels());
+   // The conversion below ignores color space completely, and it's not even
+@@ -144,8 +146,9 @@ bool CopyOutputResult::ReadRGBAPlane(base::span<uint8_t> dest,
+                                      int stride) const {
+   auto scoped_sk_bitmap = ScopedAccessSkBitmap();
+   const SkBitmap& bitmap = scoped_sk_bitmap.bitmap();
+-  if (!bitmap.readyToDraw())
++  if (!bitmap.readyToDraw()) {
+     return false;
++  }
+ 
+   DCHECK(bitmap.colorSpace());
+   SkImageInfo image_info =
+@@ -159,8 +162,9 @@ bool CopyOutputResult::ReadRGBAPlane(base::span<uint8_t> dest,
+ gfx::ColorSpace CopyOutputResult::GetRGBAColorSpace() const {
+   auto scoped_sk_bitmap = ScopedAccessSkBitmap();
+   const SkBitmap& bitmap = scoped_sk_bitmap.bitmap();
+-  if (!bitmap.readyToDraw())
++  if (!bitmap.readyToDraw()) {
+     return gfx::ColorSpace();
++  }
+   DCHECK(bitmap.colorSpace());
+   return gfx::ColorSpace(*(bitmap.colorSpace()));
+ }
+@@ -184,13 +188,15 @@ CopyOutputSkBitmapResult::CopyOutputSkBitmapResult(Format format,
+ const SkBitmap& CopyOutputSkBitmapResult::AsSkBitmap() const {
+   SkBitmap* const bitmap = cached_bitmap();
+ 
+-  if (rect().IsEmpty())
++  if (rect().IsEmpty()) {
+     return *bitmap;  // Return "null" bitmap for empty result.
++  }
+ 
+   const SkImageInfo image_info = SkImageInfo::MakeN32Premul(
+       rect().width(), rect().height(), bitmap->refColorSpace());
+-  if (bitmap->info() == image_info && bitmap->readyToDraw())
++  if (bitmap->info() == image_info && bitmap->readyToDraw()) {
+     return *bitmap;  // Return bitmap in expected format.
++  }
+ 
+   // The bitmap is not in the "native optimized" format. Convert it once for
+   // this and all future calls of this method.
+@@ -258,8 +264,9 @@ CopyOutputResult::ScopedSkBitmap::ScopedSkBitmap() = default;
+ CopyOutputResult::ScopedSkBitmap::ScopedSkBitmap(
+     const CopyOutputResult* result) {
+   DCHECK(result);
+-  if (!result->needs_lock_for_bitmap_ || result->LockSkBitmap())
++  if (!result->needs_lock_for_bitmap_ || result->LockSkBitmap()) {
+     result_ = result;
++  }
+ }
+ 
+ CopyOutputResult::ScopedSkBitmap::ScopedSkBitmap(ScopedSkBitmap&& other) {
+@@ -280,8 +287,9 @@ CopyOutputResult::ScopedSkBitmap& CopyOutputResult::ScopedSkBitmap::operator=(
+ 
+ void CopyOutputResult::ScopedSkBitmap::reset() {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+-  if (!result_)
++  if (!result_) {
+     return;
++  }
+   if (result_->needs_lock_for_bitmap_) {
+ #if DCHECK_IS_ON()
+     // We are going to unlock the content of the bitmap, so we need to make
+@@ -296,15 +304,17 @@ void CopyOutputResult::ScopedSkBitmap::reset() {
+ 
+ SkBitmap CopyOutputResult::ScopedSkBitmap::GetOutScopedBitmap() const {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+-  if (!result_)
++  if (!result_) {
+     return SkBitmap();
++  }
+ 
+   const auto& bitmap = result_->AsSkBitmap();
+ 
+   // If result_->needs_lock_for_bitmap_ is false, then bitmap can be used out of
+   // the scope.
+-  if (!result_->needs_lock_for_bitmap_)
++  if (!result_->needs_lock_for_bitmap_) {
+     return bitmap;
++  }
+ 
+   // Make a new SkBitmap and copy content to this new SkBitmap.
+   SkBitmap bitmap_copy;
+diff --git a/components/viz/common/frame_sinks/copy_output_result.h b/components/viz/common/frame_sinks/copy_output_result.h
+index 5c0cf71979afe3b354b917b50b4bfa6321116b9e..cc0e4dabad9d56c1ad1d71353bf513f9d49c78ac 100644
+--- a/components/viz/common/frame_sinks/copy_output_result.h
++++ b/components/viz/common/frame_sinks/copy_output_result.h
+@@ -36,6 +36,8 @@ class VIZ_COMMON_EXPORT CopyOutputResult {
+     // ownership of the texture (via a call to `TakeTextureOwnership()`) if it
+     // is needed beyond the lifetime of the CopyOutputResult.
+     RGBA,
++    // A RGBAF16 shared texture.
++    RGBAF16,
+     // I420 format planes. This is intended to be used internally within the VIZ
+     // component to support video capture. When requesting this format, results
+     // can only be delivered on the same task runner sequence that runs the
+diff --git a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
+index 84110ccd2f725e721d30e8cc0a83fd9d2b72383e..8e6509875c86e84b2692f65313a73f3e5a016945 100644
+--- a/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
++++ b/components/viz/service/display_embedder/skia_output_surface_impl_on_gpu.cc
+@@ -843,6 +843,8 @@ void SkiaOutputSurfaceImplOnGpu::CopyOutputRGBAInMemory(
+     SkSurface::RescaleMode rescale_mode,
+     bool is_downscale_or_identity_in_both_dimensions,
+     std::unique_ptr<CopyOutputRequest> request) {
++  DCHECK_EQ(request->result_format(), CopyOutputRequest::ResultFormat::RGBA);
++
+   // If we can't convert |color_space| to a SkColorSpace (e.g. PIECEWISE_HDR),
+   // request a sRGB destination color space for the copy result instead.
+   gfx::ColorSpace dest_color_space = color_space;
+@@ -927,8 +929,6 @@ void SkiaOutputSurfaceImplOnGpu::CopyOutputRGBA(
+     SkSurface::RescaleMode rescale_mode,
+     bool is_downscale_or_identity_in_both_dimensions,
+     std::unique_ptr<CopyOutputRequest> request) {
+-  DCHECK_EQ(request->result_format(), CopyOutputRequest::ResultFormat::RGBA);
+-
+   switch (request->result_destination()) {
+     case CopyOutputRequest::ResultDestination::kSystemMemory:
+       CopyOutputRGBAInMemory(
+@@ -952,6 +952,9 @@ void SkiaOutputSurfaceImplOnGpu::CopyOutputRGBAInTexture(
+     SkSurface::RescaleMode rescale_mode,
+     bool is_downscale_or_identity_in_both_dimensions,
+     std::unique_ptr<CopyOutputRequest> request) {
++  DCHECK(request->result_format() == CopyOutputRequest::ResultFormat::RGBA ||
++         request->result_format() == CopyOutputRequest::ResultFormat::RGBAF16);
++
+   // Check if the request is valid.
+   if (!IsValidInTextureCopyOutputRequest(geometry, *request)) {
+     return;
+@@ -970,7 +973,9 @@ void SkiaOutputSurfaceImplOnGpu::CopyOutputRGBAInTexture(
+         mailbox, context_state_->memory_type_tracker(), context_state_);
+   } else {
+     representation = CreateSharedImageRepresentationSkia(
+-        SinglePlaneFormat::kRGBA_8888,
++        request->result_format() == CopyOutputRequest::ResultFormat::RGBA
++            ? SinglePlaneFormat::kRGBA_8888
++            : SinglePlaneFormat::kRGBA_F16,
+         gfx::Size(geometry.result_selection.width(),
+                   geometry.result_selection.height()),
+         color_space, "CopyOutputRGBA");
+@@ -1130,7 +1135,7 @@ void SkiaOutputSurfaceImplOnGpu::CopyOutputRGBAInTexture(
+   }
+ 
+   request->SendResult(std::make_unique<CopyOutputTextureResult>(
+-      CopyOutputResult::Format::RGBA, geometry.result_selection,
++      request->result_format(), geometry.result_selection,
+       CopyOutputResult::TextureResult(mailbox, color_space),
+       std::move(release_callbacks)));
+ }
+@@ -1785,7 +1790,8 @@ void SkiaOutputSurfaceImplOnGpu::CopyOutput(
+                      std::move(request));
+       break;
+     }
+-    case CopyOutputRequest::ResultFormat::RGBA: {
++    case CopyOutputRequest::ResultFormat::RGBA:
++    case CopyOutputRequest::ResultFormat::RGBAF16: {
+       CopyOutputRGBA(surface, geometry, color_space, src_rect, rescale_mode,
+                      is_downscale_or_identity_in_both_dimensions,
+                      std::move(request));
+diff --git a/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc b/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
+index e8a329f013f39c49056c7eebc7412e84a1b2e98c..2567439651c8bc8155efa5c31981f11e3c33aadc 100644
+--- a/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
++++ b/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
+@@ -105,17 +105,21 @@ std::unique_ptr<VideoFramePool> GetVideoFramePoolForFormat(
+     GmbVideoFramePoolContextProvider* context_provider) {
+   CHECK(format == media::PIXEL_FORMAT_I420 ||
+         format == media::PIXEL_FORMAT_NV12 ||
+-        format == media::PIXEL_FORMAT_ARGB);
++        format == media::PIXEL_FORMAT_ARGB ||
++        format == media::PIXEL_FORMAT_RGBAF16);
+ 
+   switch (format) {
+     case media::PIXEL_FORMAT_I420:
+       return std::make_unique<SharedMemoryVideoFramePool>(capacity);
+-    case media::PIXEL_FORMAT_ARGB: {
++    case media::PIXEL_FORMAT_ARGB:
++    case media::PIXEL_FORMAT_RGBAF16: {
++      auto color_space = format == media::PIXEL_FORMAT_ARGB
++                             ? gfx::ColorSpace::CreateSRGB()
++                             : gfx::ColorSpace::CreateSRGBLinear();
+       switch (buffer_format_preference) {
+         case mojom::BufferFormatPreference::kPreferGpuMemoryBuffer:
+           return std::make_unique<GpuMemoryBufferVideoFramePool>(
+-              capacity, format, gfx::ColorSpace::CreateSRGB(),
+-              context_provider);
++              capacity, format, color_space, context_provider);
+         case mojom::BufferFormatPreference::kDefault:
+           return std::make_unique<SharedMemoryVideoFramePool>(capacity);
+         default:
+@@ -139,6 +143,8 @@ CopyOutputRequest::ResultFormat VideoPixelFormatToCopyOutputRequestFormat(
+       return CopyOutputRequest::ResultFormat::NV12;
+     case media::PIXEL_FORMAT_ARGB:
+       return CopyOutputRequest::ResultFormat::RGBA;
++    case media::PIXEL_FORMAT_RGBAF16:
++      return CopyOutputRequest::ResultFormat::RGBAF16;
+     default:
+       NOTREACHED();
+   }
+@@ -148,8 +154,11 @@ bool IsCompatibleWithFormat(const gfx::Rect& rect,
+                             media::VideoPixelFormat format) {
+   CHECK(format == media::PIXEL_FORMAT_I420 ||
+         format == media::PIXEL_FORMAT_NV12 ||
+-        format == media::PIXEL_FORMAT_ARGB);
+-  if (format == media::PIXEL_FORMAT_ARGB) {
++        format == media::PIXEL_FORMAT_ARGB ||
++        format == media::PIXEL_FORMAT_RGBAF16);
++
++  if (format == media::PIXEL_FORMAT_ARGB ||
++      format == media::PIXEL_FORMAT_RGBAF16) {
+     // No special requirements:
+     return true;
+   }
+@@ -284,9 +293,11 @@ void FrameSinkVideoCapturerImpl::SetFormat(media::VideoPixelFormat format) {
+ 
+   if (format != media::PIXEL_FORMAT_I420 &&
+       format != media::PIXEL_FORMAT_ARGB &&
+-      format != media::PIXEL_FORMAT_NV12) {
+-    LOG(DFATAL) << "Invalid pixel format: Only I420, ARGB & NV12 formats are "
+-                   "supported.";
++      format != media::PIXEL_FORMAT_NV12 &&
++      format != media::PIXEL_FORMAT_RGBAF16) {
++    LOG(DFATAL)
++        << "Invalid pixel format: Only I420, ARGB, RGBAF16 & NV12 formats are "
++           "supported.";
+   } else {
+     // We only support NV12 if we got a context provider for pool creation:
+     CHECK(format != media::PIXEL_FORMAT_NV12 ||
+@@ -459,7 +470,8 @@ void FrameSinkVideoCapturerImpl::Start(
+             mojom::BufferFormatPreference::kPreferGpuMemoryBuffer);
+ 
+   // If we are using ARGB format with GMB, we must have the pool context
+-  CHECK(pixel_format_ != media::PIXEL_FORMAT_ARGB ||
++  CHECK((pixel_format_ != media::PIXEL_FORMAT_ARGB &&
++         pixel_format_ != media::PIXEL_FORMAT_RGBAF16) ||
+         buffer_format_preference_ !=
+             mojom::BufferFormatPreference::kPreferGpuMemoryBuffer ||
+         gmb_video_frame_pool_context_provider_);
+@@ -570,13 +582,13 @@ gfx::Rect FrameSinkVideoCapturerImpl::GetContentRectangle(
+     media::VideoPixelFormat pixel_format) {
+   CHECK(pixel_format == media::PIXEL_FORMAT_I420 ||
+         pixel_format == media::PIXEL_FORMAT_NV12 ||
+-        pixel_format == media::PIXEL_FORMAT_ARGB);
++        pixel_format == media::PIXEL_FORMAT_ARGB ||
++        pixel_format == media::PIXEL_FORMAT_RGBAF16);
+ 
+   if (pixel_format == media::PIXEL_FORMAT_I420 ||
+       pixel_format == media::PIXEL_FORMAT_NV12) {
+     return media::ComputeLetterboxRegionForI420(visible_rect, source_size);
+   } else {
+-    CHECK_EQ(media::PIXEL_FORMAT_ARGB, pixel_format);
+     const gfx::Rect content_rect =
+         media::ComputeLetterboxRegion(visible_rect, source_size);
+ 
+@@ -1022,6 +1034,7 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
+                                        frame->stride(VideoFrame::Plane::kV));
+           break;
+         case media::PIXEL_FORMAT_ARGB:
++        case media::PIXEL_FORMAT_RGBAF16:
+           strides = base::StringPrintf("strideARGB:%d",
+                                        frame->stride(VideoFrame::Plane::kARGB));
+           break;
+@@ -1064,9 +1077,12 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
+     if (pixel_format_ == media::PIXEL_FORMAT_I420 ||
+         pixel_format_ == media::PIXEL_FORMAT_NV12) {
+       frame->set_color_space(gfx::ColorSpace::CreateREC709());
+-    } else {
+-      CHECK_EQ(pixel_format_, media::PIXEL_FORMAT_ARGB);
++    } else if (pixel_format_ == media::PIXEL_FORMAT_ARGB) {
+       frame->set_color_space(gfx::ColorSpace::CreateSRGB());
++    } else if (pixel_format_ == media::PIXEL_FORMAT_RGBAF16) {
++      frame->set_color_space(gfx::ColorSpace::CreateSRGBLinear());
++    } else {
++      NOTREACHED() << "Unexpected pixel format: " << pixel_format_;
+     }
+ 
+     dirty_rect_ = gfx::Rect();
+@@ -1110,7 +1126,8 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
+       buffer_format_preference_ ==
+           mojom::BufferFormatPreference::kPreferGpuMemoryBuffer &&
+       (pixel_format_ == media::PIXEL_FORMAT_NV12 ||
+-       pixel_format_ == media::PIXEL_FORMAT_ARGB);
++       pixel_format_ == media::PIXEL_FORMAT_ARGB ||
++       pixel_format_ == media::PIXEL_FORMAT_RGBAF16);
+ 
+   std::optional<BlitRequest> blit_request;
+   if (capture_texture_results) {
+@@ -1238,6 +1255,7 @@ void FrameSinkVideoCapturerImpl::DidCopyFrame(
+                                      frame->stride(VideoFrame::Plane::kUV));
+         break;
+       case CopyOutputResult::Format::RGBA:
++      case CopyOutputResult::Format::RGBAF16:
+         strides = base::StringPrintf("strideARGB:%d",
+                                      frame->stride(VideoFrame::Plane::kARGB));
+ 
+@@ -1306,7 +1324,8 @@ void FrameSinkVideoCapturerImpl::DidCopyFrame(
+       frame_capture.CaptureFailed(CaptureResult::kI420ReadbackFailed);
+     }
+     UMA_HISTOGRAM_CAPTURE_SUCCEEDED("I420", success);
+-  } else if (pixel_format_ == media::PIXEL_FORMAT_ARGB) {
++  } else if (pixel_format_ == media::PIXEL_FORMAT_ARGB ||
++             pixel_format_ == media::PIXEL_FORMAT_RGBAF16) {
+     if (buffer_format_preference_ == mojom::BufferFormatPreference::kDefault) {
+       int stride = frame->stride(VideoFrame::Plane::kARGB);
+       // Note: ResultFormat::RGBA CopyOutputResult's format currently is
+@@ -1533,7 +1552,8 @@ void FrameSinkVideoCapturerImpl::MaybeDeliverFrame(FrameCapture frame_capture) {
+ 
+ gfx::Size FrameSinkVideoCapturerImpl::AdjustSizeForPixelFormat(
+     const gfx::Size& raw_size) const {
+-  if (pixel_format_ == media::PIXEL_FORMAT_ARGB) {
++  if (pixel_format_ == media::PIXEL_FORMAT_ARGB ||
++      pixel_format_ == media::PIXEL_FORMAT_RGBAF16) {
+     gfx::Size result(raw_size);
+     if (result.width() <= 0) {
+       result.set_width(1);
+diff --git a/gpu/ipc/service/gpu_memory_buffer_factory_dxgi.cc b/gpu/ipc/service/gpu_memory_buffer_factory_dxgi.cc
+index 2b8f41a584c5d14ea9d72d67c2abe71eed4a54ac..925df89c93ced667c0be7cf6a3078c90944350c8 100644
+--- a/gpu/ipc/service/gpu_memory_buffer_factory_dxgi.cc
++++ b/gpu/ipc/service/gpu_memory_buffer_factory_dxgi.cc
+@@ -161,6 +161,9 @@ gfx::GpuMemoryBufferHandle GpuMemoryBufferFactoryDXGI::CreateGpuMemoryBuffer(
+     case gfx::BufferFormat::BGRX_8888:
+       dxgi_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+       break;
++    case gfx::BufferFormat::RGBA_F16:
++      dxgi_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
++      break;
+     case gfx::BufferFormat::YUV_420_BIPLANAR:
+       dxgi_format = DXGI_FORMAT_NV12;
+       break;
+diff --git a/media/base/format_utils.cc b/media/base/format_utils.cc
+index 0e1080e0a6e281565b8c9dc50ca3aa57e1c2525b..88a038ef6da151a855d4c959ea8f4cffc020a856 100644
+--- a/media/base/format_utils.cc
++++ b/media/base/format_utils.cc
+@@ -20,6 +20,9 @@ std::optional<VideoPixelFormat> GfxBufferFormatToVideoPixelFormat(
+     case gfx::BufferFormat::RGBA_8888:
+       return PIXEL_FORMAT_ABGR;
+ 
++    case gfx::BufferFormat::RGBA_F16:
++      return PIXEL_FORMAT_RGBAF16;
++
+     // There is no PIXEL_FORMAT_XBGR which would have been the right mapping.
+     // See ui/ozone drm_util.cc::GetFourCCFormatFromBufferFormat as reference.
+     // But here it is only about indicating to not consider the alpha channel.
+@@ -80,6 +83,9 @@ std::optional<gfx::BufferFormat> VideoPixelFormatToGfxBufferFormat(
+     case PIXEL_FORMAT_XR30:
+       return gfx::BufferFormat::RGBA_1010102;
+ 
++    case PIXEL_FORMAT_RGBAF16:
++      return gfx::BufferFormat::RGBA_F16;
++
+     default:
+       DLOG(WARNING) << "Unsupported VideoPixelFormat: " << pixel_format;
+       return std::nullopt;
+diff --git a/media/video/renderable_gpu_memory_buffer_video_frame_pool.cc b/media/video/renderable_gpu_memory_buffer_video_frame_pool.cc
+index 9c40397be51f1ce30cbe73d8c6fc0bb279c95d7a..1e1cdca56129c7028629e8b1140fdfae344baaef 100644
+--- a/media/video/renderable_gpu_memory_buffer_video_frame_pool.cc
++++ b/media/video/renderable_gpu_memory_buffer_video_frame_pool.cc
+@@ -163,7 +163,7 @@ FrameResources::FrameResources(scoped_refptr<InternalRefCountedPool> pool,
+       color_space_(color_space) {
+   // Currently only support ARGB, ABGR and NV12.
+   CHECK(format == PIXEL_FORMAT_ARGB || format == PIXEL_FORMAT_ABGR ||
+-        format == PIXEL_FORMAT_NV12);
++        format == PIXEL_FORMAT_RGBAF16 || format == PIXEL_FORMAT_NV12);
+ }
+ 
+ FrameResources::~FrameResources() {
+@@ -179,6 +179,7 @@ gfx::Size GetBufferSizeInPixelsForVideoPixelFormat(
+   switch (format) {
+     case PIXEL_FORMAT_ARGB:
+     case PIXEL_FORMAT_ABGR:
++    case PIXEL_FORMAT_RGBAF16:
+       return coded_size;
+     case PIXEL_FORMAT_NV12:
+       // Align number of rows to 2, because it's required by YUV_420_BIPLANAR
+@@ -261,7 +262,7 @@ bool FrameResources::Initialize() {
+   }
+ 
+   CHECK(format_ == PIXEL_FORMAT_NV12 || format_ == PIXEL_FORMAT_ABGR ||
+-        format_ == PIXEL_FORMAT_ARGB)
++        format_ == PIXEL_FORMAT_ARGB || format_ == PIXEL_FORMAT_RGBAF16)
+       << format_;
+   const viz::SharedImageFormat si_format =
+       viz::GetSharedImageFormat(buffer_format);
+diff --git a/services/viz/public/cpp/compositing/copy_output_result_mojom_traits.cc b/services/viz/public/cpp/compositing/copy_output_result_mojom_traits.cc
+index ccf9f7a07a63ea10fa699ad5d7fa85d1990a562a..28cdd1b547211b4322176b1d3f4ceda82553ac63 100644
+--- a/services/viz/public/cpp/compositing/copy_output_result_mojom_traits.cc
++++ b/services/viz/public/cpp/compositing/copy_output_result_mojom_traits.cc
+@@ -58,6 +58,7 @@ EnumTraits<viz::mojom::CopyOutputResultFormat, viz::CopyOutputResult::Format>::
+   switch (format) {
+     case viz::CopyOutputResult::Format::RGBA:
+       return viz::mojom::CopyOutputResultFormat::RGBA;
++    case viz::CopyOutputResult::Format::RGBAF16:
+     case viz::CopyOutputResult::Format::I420_PLANES:
+     case viz::CopyOutputResult::Format::NV12:
+       break;  // Not intended for transport across service boundaries.
+@@ -286,6 +287,7 @@ bool StructTraits<viz::mojom::CopyOutputResultDataView,
+         }
+       }
+ 
++    case viz::CopyOutputResult::Format::RGBAF16:
+     case viz::CopyOutputResult::Format::I420_PLANES:
+     case viz::CopyOutputResult::Format::NV12:
+       break;  // Not intended for transport across service boundaries.
+diff --git a/third_party/blink/renderer/modules/webgpu/external_texture_helper.cc b/third_party/blink/renderer/modules/webgpu/external_texture_helper.cc
+index 958da289b701d84b1ea0bdc80198d0c58e68cd1b..3c62459d4819fe6e5a9aa6f9e3d6fae1adaa342e 100644
+--- a/third_party/blink/renderer/modules/webgpu/external_texture_helper.cc
++++ b/third_party/blink/renderer/modules/webgpu/external_texture_helper.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/modules/webgpu/external_texture_helper.h"
+ 
++#include "components/viz/common/resources/shared_image_format_utils.h"
+ #include "media/base/video_frame.h"
+ #include "media/base/video_transformation.h"
+ #include "media/renderers/paint_canvas_video_renderer.h"
+@@ -380,11 +381,17 @@ ExternalTexture CreateExternalTexture(
+     resource_color_space = media_video_frame->CompatRGBColorSpace();
+   }
+ 
++  auto sk_color_type = kN32_SkColorType;
++  if (media_video_frame->HasSharedImage()) {
++    sk_color_type =
++        viz::ToClosestSkColorType(media_video_frame->shared_image()->format());
++  }
++
+   std::unique_ptr<RecyclableCanvasResource> recyclable_canvas_resource =
+       device->GetDawnControlClient()->GetOrCreateCanvasResource(
+-          SkImageInfo::MakeN32Premul(natural_size.width(),
+-                                     natural_size.height(),
+-                                     resource_color_space.ToSkColorSpace()));
++          SkImageInfo::Make(natural_size.width(), natural_size.height(),
++                            sk_color_type, kPremul_SkAlphaType,
++                            resource_color_space.ToSkColorSpace()));
+   if (!recyclable_canvas_resource) {
+     return external_texture;
+   }
