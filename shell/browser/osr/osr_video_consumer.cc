@@ -26,7 +26,7 @@ OffScreenVideoConsumer::OffScreenVideoConsumer(
       video_capturer_(view->CreateVideoCapturer()) {
   video_capturer_->SetAutoThrottlingEnabled(false);
   video_capturer_->SetMinSizeChangePeriod(base::TimeDelta());
-  video_capturer_->SetFormat(media::PIXEL_FORMAT_ARGB);
+  video_capturer_->SetFormat(media::PIXEL_FORMAT_RGBAF16);
 
   // https://crrev.org/c/6438681
   // Disable capturer's animation lock-in feature for offscreen capture to
