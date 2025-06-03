@@ -464,26 +464,17 @@ index ccf9f7a07a63ea10fa699ad5d7fa85d1990a562a..28cdd1b547211b4322176b1d3f4ceda8
      case viz::CopyOutputResult::Format::NV12:
        break;  // Not intended for transport across service boundaries.
 diff --git a/third_party/blink/renderer/modules/webgpu/external_texture_helper.cc b/third_party/blink/renderer/modules/webgpu/external_texture_helper.cc
-index 958da289b701d84b1ea0bdc80198d0c58e68cd1b..3c62459d4819fe6e5a9aa6f9e3d6fae1adaa342e 100644
+index 958da289b701d84b1ea0bdc80198d0c58e68cd1b..ddff24222c9152bfd4bdc59dc5227837fa487014 100644
 --- a/third_party/blink/renderer/modules/webgpu/external_texture_helper.cc
 +++ b/third_party/blink/renderer/modules/webgpu/external_texture_helper.cc
-@@ -4,6 +4,7 @@
- 
- #include "third_party/blink/renderer/modules/webgpu/external_texture_helper.h"
- 
-+#include "components/viz/common/resources/shared_image_format_utils.h"
- #include "media/base/video_frame.h"
- #include "media/base/video_transformation.h"
- #include "media/renderers/paint_canvas_video_renderer.h"
-@@ -380,11 +381,17 @@ ExternalTexture CreateExternalTexture(
+@@ -380,11 +380,16 @@ ExternalTexture CreateExternalTexture(
      resource_color_space = media_video_frame->CompatRGBColorSpace();
    }
  
-+  auto sk_color_type = kN32_SkColorType;
-+  if (media_video_frame->HasSharedImage()) {
-+    sk_color_type =
-+        viz::ToClosestSkColorType(media_video_frame->shared_image()->format());
-+  }
++  // Use RGBA_F16 canvas resource for HDR color space to prevent potential
++  // color info loss, and N32 for non-HDR.
++  auto sk_color_type =
++      resource_color_space.IsHDR() ? kRGBA_F16_SkColorType : kN32_SkColorType;
 +
    std::unique_ptr<RecyclableCanvasResource> recyclable_canvas_resource =
        device->GetDawnControlClient()->GetOrCreateCanvasResource(
